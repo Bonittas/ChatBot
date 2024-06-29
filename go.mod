@@ -1,6 +1,5 @@
-module github.com/Bonittas/ChatBot
-
 go 1.22.2
+module github.com/Bonittas/ChatBot
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api v4.6.4+incompatible // indirect
