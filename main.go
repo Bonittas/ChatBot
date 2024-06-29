@@ -1,130 +1,107 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"log"
-	"net/http"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "strings"
+
+    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 const (
-	telegramBotToken = "6511406154:AAEeyiHaG_PZxF6jYyp38aG370tbr_BTlqI" // Replace with your Telegram bot token
-	openTriviaURL    = "https://opentdb.com/api.php?amount=1&type=boolean" // Example API endpoint
-	baseURL          = "https://api.telegram.org/bot%s/"
-	getUpdatesURL    = "getUpdates?offset=%d&timeout=60" // Timeout set to 60s
+    botToken         = "6511406154:AAEeyiHaG_PZxF6jYyp38aG370tbr_BTlqI"
+    exchangeRateAPI  = "https://v6.exchangerate-api.com/v6/%s/latest/%s"
+    apiKey           = "adf234c8fe244535714b13ef"
+    baseCurrency     = "USD" 
 )
 
-// TelegramUpdate represents a Telegram update received from polling
-type TelegramUpdate struct {
-	UpdateID int `json:"update_id"`
-	Message  struct {
-		Text     string `json:"text"`
-		Chat     Chat   `json:"chat"`
-		From     User   `json:"from"`
-		MessageID int    `json:"message_id"`
-	} `json:"message"`
-}
-
-// Chat represents a Telegram chat
-type Chat struct {
-	ID int `json:"id"`
-}
-
-// User represents a Telegram user
-type User struct {
-	ID int `json:"id"`
-}
-
-// TelegramResponse represents a Telegram API response
-type TelegramResponse struct {
-	ChatID int    `json:"chat_id"`
-	Text   string `json:"text"`
+type ExchangeRateResponse struct {
+    ConversionRates map[string]float64 `json:"conversion_rates"`
+    Result          string             `json:"result"`
+    Documentation   string             `json:"documentation"`
+    TermsOfUse      string             `json:"terms_of_use"`
+    TimeLastUpdate  string             `json:"time_last_update_utc"`
 }
 
 func main() {
-	offset := 0
-	for {
-		updates, err := getUpdates(offset)
-		if err != nil {
-			log.Printf("Error getting updates: %v", err)
-			time.Sleep(5 * time.Second) // Wait 5 seconds before retrying
-			continue
-		}
+    bot, err := tgbotapi.NewBotAPI(botToken)
+    if err != nil {
+        log.Panic(err)
+    }
 
-		for _, update := range updates {
-			offset = update.UpdateID + 1
+    bot.Debug = true
 
-			if strings.Contains(strings.ToLower(update.Message.Text), "/start") {
-				sendMessage(update.Message.Chat.ID, "Hello! I'm a simple bot. Ask me anything!")
-			} else {
-				// For simplicity, we'll just use a static API endpoint
-				response, err := http.Get(openTriviaURL)
-				if err != nil {
-					log.Printf("Error fetching from API: %v", err)
-					continue
-				}
-				defer response.Body.Close()
+    log.Printf("Authorized on account %s", bot.Self.UserName)
 
-				var result map[string]interface{}
-				err = json.NewDecoder(response.Body).Decode(&result)
-				if err != nil {
-					log.Printf("Error decoding API response: %v", err)
-					continue
-				}
+    u := tgbotapi.NewUpdate(0)
+    u.Timeout = 60
 
-				// Extract the question from the API response
-				question := result["results"].([]interface{})[0].(map[string]interface{})["question"].(string)
-				sendMessage(update.Message.Chat.ID, question)
-			}
-		}
-	}
+    updates := bot.GetUpdatesChan(u)
+
+    for update := range updates {
+        if update.Message == nil {
+            continue
+        }
+
+        if update.Message.IsCommand() {
+            switch update.Message.Command() {
+            case "start":
+                msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Hi! I'm a bot that provides exchange rates. Type /rates to see the rates.")
+                bot.Send(msg)
+            case "rates":
+                ratesMsg, err := getExchangeRates()
+                if err != nil {
+                    log.Printf("Error fetching exchange rates: %v", err)
+                    msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I couldn't fetch exchange rates at the moment.")
+                    bot.Send(msg)
+                    continue
+                }
+                msg := tgbotapi.NewMessage(update.Message.Chat.ID, ratesMsg)
+                bot.Send(msg)
+            default:
+                msg := tgbotapi.NewMessage(update.Message.Chat.ID, "I don't know that command")
+                bot.Send(msg)
+            }
+        } else if strings.Contains(strings.ToLower(update.Message.Text), "exchange rates") {
+            ratesMsg, err := getExchangeRates()
+            if err != nil {
+                log.Printf("Error fetching exchange rates: %v", err)
+                msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I couldn't fetch exchange rates at the moment.")
+                bot.Send(msg)
+                continue
+            }
+            msg := tgbotapi.NewMessage(update.Message.Chat.ID, ratesMsg)
+            bot.Send(msg)
+        } else {
+            msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, I don't understand that message.")
+            bot.Send(msg)
+        }
+    }
 }
 
-// getUpdates retrieves updates from Telegram using long polling
-func getUpdates(offset int) ([]TelegramUpdate, error) {
-	url := fmt.Sprintf(baseURL+getUpdatesURL, telegramBotToken, offset)
-	response, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("error fetching updates: %w", err)
-	}
-	defer response.Body.Close()
+func getExchangeRates() (string, error) {
+    apiURL := fmt.Sprintf(exchangeRateAPI, apiKey, baseCurrency)
 
-	var responseData struct {
-		Ok     bool             `json:"ok"`
-		Result []TelegramUpdate `json:"result"`
-	}
-	err = json.NewDecoder(response.Body).Decode(&responseData)
-	if err != nil {
-		return nil, fmt.Errorf("error decoding response: %w", err)
-	}
+    resp, err := http.Get(apiURL)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
 
-	if !responseData.Ok {
-		return nil, fmt.Errorf("telegram API error")
-	}
+    var exchangeRates ExchangeRateResponse
+    if err := json.NewDecoder(resp.Body).Decode(&exchangeRates); err != nil {
+        return "", err
+    }
 
-	return responseData.Result, nil
-}
+    if exchangeRates.Result != "success" {
+        return "", fmt.Errorf("API request failed: %s", exchangeRates.Result)
+    }
 
-// sendMessage sends a message to a Telegram chat
-func sendMessage(chatID int, text string) {
-	message := TelegramResponse{
-		ChatID: chatID,
-		Text:   text,
-	}
-	messageBytes, err := json.Marshal(message)
-	if err != nil {
-		log.Printf("Error encoding message: %v", err)
-		return
-	}
-
-	// Send the message using Telegram Bot API
-	_, err = http.Post(fmt.Sprintf(baseURL+"sendMessage", telegramBotToken),
-		"application/json", bytes.NewBuffer(messageBytes))
-	if err != nil {
-		log.Printf("Error sending message: %v", err)
-		return
-	}
+    ratesMsg := fmt.Sprintf("Exchange Rates (Base Currency: %s):\n", baseCurrency)
+    for currency, rate := range exchangeRates.ConversionRates {
+        ratesMsg += fmt.Sprintf("%s: %.2f\n", strings.ToUpper(currency), rate)
+    }
+    return ratesMsg, nil
 }
